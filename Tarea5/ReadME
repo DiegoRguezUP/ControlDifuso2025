@@ -1,0 +1,21 @@
+# Optimización de Control PD con PSO  
+**Diego Rodriguez**  
+MATLAB R2025a  
+
+Este proyecto implementa un algoritmo de **Optimización por Enjambre de Partículas (PSO)** para ajustar las ganancias **Kp** y **Kd** de un controlador PD aplicado a un sistema de péndulo invertido.  
+
+## Contenido
+- `sim_plant_pend_inv_pd.m`: Función de costo que ejecuta la simulación y calcula el MSE.  
+- `pso_pd_control.m`: Script principal que implementa el PSO.  
+- Modelo Simulink: `Ejercicio2_CustomFuzzyBlock.slx`.
+
+## Características
+- Visualización en tiempo real de los valores de Kp, Kd y el costo.  
+- Criterio de paro temprano si el costo no mejora en 5 iteraciones.  
+- Configuración de parámetros como tamaño de enjambre, factores cognitivo y social, y pasos de simulación.
+
+## Requisitos
+- MATLAB R2025a o superior.  
+- Simulink.  
+
+---
