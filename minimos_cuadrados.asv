@@ -1,0 +1,211 @@
+%% =================== Minimos cuadrados (Ridge/OLS) ======================
+% Requisitos en workspace:
+%   u : N x 2  (entradas)  -> [Vp, Vy]
+%   x : N x 4  (estados)   -> [theta, psi, dtheta, dpsi]
+% ========================================================================
+
+clearvars -except u x; close all; rng(0);
+
+%% -------- Parámetros --------
+Kdel = 5;                      % mas retardos porque el heli no es tan rapido
+use_bias = true;
+weights_outputs = [4 1 2 1];   % le damos mas peso a x1 (pitch)
+lambdas = logspace(-8, 0, 9);
+Kfold   = 5;
+
+%% 1) Leer y normalizar
+U = read_ws_signal(u);   % (N x 2)
+X = read_ws_signal(x);   % (N x 4)
+assert(size(U,2)==2 && size(X,2)==4, 'Dimensiones esperadas: u N×2, x N×4.');
+
+% justo despues de leer X:
+figure;
+for i = 1:4
+    subplot(4,1,i);
+    plot(X(:,i)); grid on;
+    title(sprintf('X(:,%d)', i));
+end
+
+N = min(size(U,1), size(X,1));
+U = U(1:N,:); X = X(1:N,:);
+assert(N > Kdel+2, 'Se requieren mas muestras: aumenta N o reduce Kdel.');
+
+scaleX = max(abs(X),[],1); scaleX(scaleX==0)=1;
+scaleU = max(abs(U),[],1); scaleU(scaleU==0)=1;
+Xn = X./scaleX;
+Un = U./scaleU;
+
+%% 2) Construir Phi (base) y objetivo (Xp) normalizados
+Nsamp = N - Kdel;
+Phi = [];
+Xp  = zeros(Nsamp,4);
+
+for idx = 1:Nsamp
+    k = idx + Kdel;
+    reg = [];
+
+    % ------------------ 2a) retardos lineales ------------------
+    for d = 1:Kdel
+        reg = [reg, Xn(k-d,:), Un(k-d,:)];  %#ok<AGROW>
+    end
+
+    % ------------------ 2b) no lineales fisicas (del retardo k-1) ------------------
+    xk1 = Xn(k-1,:);        % [theta, psi, dtheta, dpsi] normalizados
+    uk1 = Un(k-1,:);        % [Vp, Vy] normalizados
+
+    theta1 = xk1(1);
+    psi1   = xk1(2);
+    dth1   = xk1(3);
+    dpsi1  = xk1(4);
+
+    % lo que ya teniamos
+    tanh_x = tanh(xk1);
+    sq_x   = xk1.^2;
+
+    % cruces x*u (como antes)
+    cross_xu = zeros(1, 4*2);
+    cc = 1;
+    for ii=1:4
+        for jj=1:2
+            cross_xu(cc) = xk1(ii)*uk1(jj);
+            cc = cc + 1;
+        end
+    end
+
+    % ----------- NUEVOS TERMINOS DEL HELICOPTERO -----------
+    cth  = cos(theta1);              % gravedad
+    sth  = sin(theta1);
+    sth_cth = sth * cth;             % sin(theta)*cos(theta)
+    dpsi2_sth_cth = (dpsi1^2) * sth_cth;  % termino de acoplamiento con yaw
+
+    % cruces trigonométricos con las entradas (porque Vp y Vy tambien entran ahi)
+    cross_trig_u = [ ...
+        cth * uk1(1), cth * uk1(2), ...
+        sth * uk1(1), sth * uk1(2) ...
+    ];
+
+    if use_bias
+        reg = [reg, ...
+               tanh_x, sq_x, ...
+               cross_xu, ...
+               cth, sth, sth_cth, dpsi2_sth_cth, ...
+               cross_trig_u, ...
+               1];
+    else
+        reg = [reg, ...
+               tanh_x, sq_x, ...
+               cross_xu, ...
+               cth, sth, sth_cth, dpsi2_sth_cth, ...
+               cross_trig_u];
+    end
+
+    Phi = [Phi; reg];                 %#ok<AGROW>
+    Xp(idx,:) = Xn(k,:);              % objetivo normalizado
+end
+M = size(Phi,2);
+
+%% 3) Seleccionar lambda con K-fold (RMSE ponderado)
+idx_cv = crossval_index(Nsamp, Kfold);
+best_lambda = lambdas(1); best_score = inf;
+
+for L = lambdas
+    scores = zeros(Kfold,1);
+    for kk = 1:Kfold
+        tr = (idx_cv ~= kk);
+        va = (idx_cv == kk);
+        Phi_tr = Phi(tr,:); Y_tr = Xp(tr,:);
+        Phi_va = Phi(va,:); Y_va = Xp(va,:);
+        ThetaL = zeros(M,4);
+        for i = 1:4
+            ThetaL(:,i) = (Phi_tr'*Phi_tr + L*eye(M)) \ (Phi_tr' * (weights_outputs(i)*Y_tr(:,i)));
+        end
+        Yh = Phi_va*ThetaL;
+        err = Y_va - Yh;
+        wrmse = sqrt(mean( (err.^2).*repmat(weights_outputs, size(err,1),1) , 1 ));
+        scores(kk) = mean(wrmse);
+    end
+    if mean(scores) < best_score
+        best_score = mean(scores);
+        best_lambda = L;
+    end
+end
+lambda = best_lambda;
+fprintf('Lambda seleccionado (ridge): %.3e (score Kfold = %.3e)\n', lambda, best_score);
+
+%% 4) Estimar Theta final
+Theta = zeros(M,4);
+for i = 1:4
+    Theta(:,i) = (Phi'*Phi + lambda*eye(M)) \ (Phi' * (weights_outputs(i)*Xp(:,i)));
+end
+
+%% 5) Prediccion one-step y metricas (en unidades originales)
+Xp_pred_n = Phi*Theta;
+Xp_pred   = Xp_pred_n .* scaleX;
+X_true    = X(Kdel+1:N,:);
+E1        = X_true - Xp_pred;
+
+rmse_1step = sqrt(mean(E1.^2,1));
+SStot = sum((X_true - mean(X_true,1)).^2,1); SStot(SStot==0)=eps;
+SSres = sum((E1).^2,1);
+R2_1step = 1 - SSres ./ SStot;
+
+fprintf('RMSE one-step: [%.4e  %.4e  %.4e  %.4e]\n', rmse_1step);
+fprintf('R2   one-step: [%.4f  %.4f  %.4f  %.4f]\n', R2_1step);
+
+%% 6) Graficas
+tvec = (Kdel+1:N)';  % solo indice
+state_names = {'theta','psi','dtheta','dpsi'};
+
+figure('Name','One-step: Medido vs Predicho','NumberTitle','off','Units','normalized','Position',[0.07 0.07 0.7 0.8]);
+for i=1:4
+    subplot(4,1,i);
+    plot(tvec, X_true(:,i), 'b-', 'LineWidth',1.05); hold on;
+    plot(tvec, Xp_pred(:,i), 'r--', 'LineWidth',1.05); grid on;
+    ylabel(state_names{i});
+    if i==1, title('One-step: Medido vs. Predicho'); end
+    if i==4, xlabel('muestra'); end
+end
+legend('Medido','Predicho');
+
+figure('Name','Residuos one-step','NumberTitle','off','Units','normalized','Position',[0.12 0.12 0.6 0.6]);
+for i=1:4
+    subplot(4,1,i);
+    plot(tvec, E1(:,i),'k-'); grid on; ylabel(sprintf('e_%d',i));
+    if i==1, title('Residuos one-step (medido - predicho)'); end
+end
+xlabel('muestra');
+
+%% 7) Exportar
+assignin('base','Theta_base', Theta);
+assignin('base','lambda_ridge', lambda);
+assignin('base','scaleX', scaleX);
+assignin('base','scaleU', scaleU);
+assignin('base','rmse_1step', rmse_1step);
+assignin('base','R2_1step',   R2_1step);
+fprintf('Listo: Theta_base, lambda_ridge, rmse_1step, R2_1step en workspace.\n');
+
+%% ====================== Helpers ======================
+function M = read_ws_signal(sig)
+    if istimetable(sig)
+        M = sig.Variables;
+    elseif isa(sig, 'timeseries')
+        M = sig.Data;
+    elseif isstruct(sig) && isfield(sig,'signals') && isfield(sig.signals,'values')
+        M = sig.signals.values;
+    elseif isnumeric(sig)
+        M = sig;
+    else
+        error('Formato no reconocido para u/x. Provee matriz, timeseries o struct de Simulink.');
+    end
+    M = squeeze(M);
+    if size(M,1)==1 && size(M,2) > 1, M = M.'; end
+end
+
+function idx = crossval_index(N,K)
+    rng(0); perm = randperm(N); idx = zeros(N,1);
+    base = floor(N/K); s = 1;
+    for k=1:K
+        if k < K, sel = perm(s:s+base-1); else, sel = perm(s:end); end
+        idx(sel) = k; s = s + base;
+    end
+end
