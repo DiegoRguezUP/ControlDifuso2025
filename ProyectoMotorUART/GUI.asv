@@ -1,0 +1,272 @@
+function control_motor_gui_dark_setpoint
+% =========================================================================
+% Interfaz Gráfica de Usuario (GUI) para Control de Motor en Simulink
+% Versión: 2.2 (Setpoint Control)
+% MATLAB: R2025a
+%
+% Funcionalidades:
+% - Control de referencia (Setpoint, Duración, Suavizado) con slider.
+% - Selección de modo de control: PID clásico o PID Difuso.
+% - Control de simulación (Iniciar, Detener, Limpiar).
+% - Visualización en tiempo real de la respuesta del sistema.
+% - Interfaz con tema oscuro.
+%
+% NOTA: Los parámetros del controlador (Kp, Ki, Kd) deben ser
+% predefinidos en el workspace base.
+% =========================================================================
+
+% -------------------------------------------------------------------------
+% 1. CONFIGURACIÓN INICIAL Y VARIABLES DE ESTADO
+% -------------------------------------------------------------------------
+S.mdl = 'General_2'; % <<<< Nombre de tu modelo
+S.t = []; S.y = []; S.r = []; % Datos para la gráfica
+S.t0 = []; % Temporizador para el tiempo de simulación
+
+% Límites para el slider/potenciómetro de w_cmd
+S.slider.min = 0;
+S.slider.max = 200;
+
+% Paleta de colores para el tema oscuro
+C.bg = [0.12 0.12 0.12]; C.panel = [0.18 0.18 0.18]; C.text = [0.9 0.9 0.9];
+C.edit_bg = [0.25 0.25 0.25]; C.btn_run = [0.1 0.5 0.2]; C.btn_stop = [0.7 0.2 0.2];
+C.btn_util = [0.3 0.3 0.3]; C.grid = [0.4 0.4 0.4]; C.plot_ref = [0.2 0.7 1.0];
+C.plot_meas = [1.0 0.4 0.4];
+
+% Asegurar que TODAS las variables necesarias existan en el workspace base
+ensure('w_cmd', 100);
+ensure('Td', 2.0);
+ensure('enable_shape', 1);
+ensure('R_vec', [10, -30, 30, -15, 6, -1]);
+ensure('use_pid', 1);
+ensure('Kp', 246.285);
+ensure('Ki', 1.71089);
+ensure('Kd', -2.44598);
+
+
+% Cargar modelo de Simulink
+try
+    if ~bdIsLoaded(S.mdl), load_system(S.mdl); end
+    set_param(S.mdl, 'SimulationMode', 'normal', 'StopTime', 'inf');
+catch ME
+    errordlg(['No se pudo cargar el modelo: ', S.mdl, '. Error: ', ME.message], 'Error');
+    return;
+end
+
+% -------------------------------------------------------------------------
+% 2. CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA
+% -------------------------------------------------------------------------
+H = struct(); % Estructura para almacenar los handles
+H.f = figure('Name', 'Motor Control GUI (Setpoint) - v2.2', 'NumberTitle', 'off', 'MenuBar', 'none', 'Color', C.bg, 'DefaultUicontrolFontName', 'Segoe UI', 'DefaultUicontrolFontSize', 10, 'CloseRequestFcn', @onClose);
+
+% --- Paneles de Control ---
+panelTop = uipanel(H.f, 'Title', 'CONTROL DE SIMULACIÓN', 'FontSize', 10, 'BackgroundColor', C.panel, 'ForegroundColor', C.text, 'Position', [0.01 0.88 0.98 0.11]);
+panelLeftMode = uipanel(H.f, 'Title', 'MODO DE CONTROL', 'FontSize', 10, 'BackgroundColor', C.panel, 'ForegroundColor', C.text, 'Position', [0.01 0.55 0.30 0.32]);
+panelLeftRef = uipanel(H.f, 'Title', 'CONTROL DE REFERENCIA', 'FontSize', 10, 'BackgroundColor', C.panel, 'ForegroundColor', C.text, 'Position', [0.01 0.05 0.30 0.48]);
+
+% --- Componentes en Panel Superior (Simulación) ---
+H.btnRun = addButton(panelTop, [0.30 0.25 0.13 0.5], '▶ INICIAR', C.btn_run, C.text, @onRun);
+H.btnStop = addButton(panelTop, [0.45 0.25 0.13 0.5], '■ DETENER', C.btn_stop, C.text, @onStop);
+H.btnClr = addButton(panelTop, [0.60 0.25 0.13 0.5], '⟲ LIMPIAR', C.btn_util, C.text, @onClear);
+
+% --- Componentes en Panel Izquierdo (Modo) ---
+H.btnPID = uicontrol(panelLeftMode, 'Style', 'togglebutton', 'String', 'PID Clásico', 'FontSize', 11, 'Units', 'normalized', 'Position', [0.05 0.45 0.9 0.3], 'Callback', @(~,~)setMode(1));
+H.btnFZ = uicontrol(panelLeftMode, 'Style', 'togglebutton', 'String', 'PID Difuso', 'FontSize', 11, 'Units', 'normalized', 'Position', [0.05 0.1 0.9 0.3], 'Callback', @(~,~)setMode(0));
+
+% --- Componentes en Panel Izquierdo (Referencia) ---
+H.cbShape = uicontrol(panelLeftRef, 'Style', 'checkbox', 'Units', 'normalized', 'Position', [0.05 0.85 0.9 0.1], 'String', 'Habilitar Suavizado', 'Value', evalin('base', 'enable_shape'), 'BackgroundColor', C.panel, 'ForegroundColor', C.text, 'FontSize', 11, 'Callback', @pushBezierParams);
+H.edCmd = addEdit(panelLeftRef, [0.05 0.65 0.4 0.12], 'Setpoint (w_cmd)', C, @pushBezierParams, num2str(evalin('base', 'w_cmd')));
+H.edTd = addEdit(panelLeftRef, [0.55 0.65 0.4 0.12], 'Duración Td [s]', C, @pushBezierParams, num2str(evalin('base', 'Td')));
+uicontrol(panelLeftRef,'Style','text','String','Ajuste Setpoint (Potenciómetro)','Units','normalized','Position',[0.05 0.45 0.9 0.1],'BackgroundColor',C.panel,'ForegroundColor',C.text,'HorizontalAlignment','left','FontSize',10);
+H.sliCmd = uicontrol(panelLeftRef, 'Style', 'slider', ...
+    'Min', S.slider.min, 'Max', S.slider.max, 'Value', evalin('base', 'w_cmd'), ...
+    'Units', 'normalized', 'Position', [0.05 0.3 0.9 0.12], ...
+    'Callback', @pushBezierParams);
+
+% --- Gráfica y Estado ---
+H.ax = axes('Parent', H.f, 'Position', [0.35 0.12 0.62 0.72], 'Color', C.edit_bg, 'XColor', C.text, 'YColor', C.text, 'GridColor', C.grid, 'Box', 'on', 'XGrid', 'on', 'YGrid', 'on');
+title(H.ax, 'Respuesta del Sistema', 'Color', C.text, 'FontSize', 14);
+xlabel(H.ax, 'Tiempo (s)', 'Color', C.text); ylabel(H.ax, 'Velocidad', 'Color', C.text); hold(H.ax, 'on');
+H.hRef = plot(H.ax, NaN, NaN, '--', 'Color', C.plot_ref, 'LineWidth', 2.0, 'DisplayName', 'Referencia ($\omega_{ref}$)');
+H.hMeas = plot(H.ax, NaN, NaN, '-', 'Color', C.plot_meas, 'LineWidth', 2.5, 'DisplayName', 'Medida ($\omega_{meas}$)');
+legend(H.ax, 'TextColor', C.text, 'Interpreter', 'latex', 'Location', 'southeast');
+H.txtStatus = uicontrol(H.f, 'Style', 'text', 'String', 'Listo.', 'Position', [10 5 H.f.Position(3)-20 25], 'BackgroundColor', C.bg, 'ForegroundColor', C.text, 'FontSize', 11, 'HorizontalAlignment', 'center');
+setMode(evalin('base', 'use_pid'));
+set(H.f, 'SizeChangedFcn', @onResize);
+
+% -------------------------------------------------------------------------
+% 3. TEMPORIZADOR Y FUNCIONES DE CALLBACK
+% -------------------------------------------------------------------------
+% Rutas a los bloques de Simulink que se pueden modificar en tiempo real
+S.path.use_pid = 'Pendulo_invertido_Fuzzy_Logic_Controler/use_pid';
+S.path.w_cmd = 'Pendulo_invertido_Fuzzy_Logic_Controler/w_cmd';
+S.path.td = 'Pendulo_invertido_Fuzzy_Logic_Controler/Td';
+S.path.enable_shape = 'Pendulo_invertido_Fuzzy_Logic_Controler/enable_shape';
+
+H.tmr = timer('ExecutionMode', 'fixedRate', 'Period', 0.05, 'TimerFcn', @onTick);
+
+    function onRun(~, ~)
+        setStatus('Iniciando...', C.plot_ref);
+        % Envía los valores de referencia actuales antes de iniciar
+        pushBezierParams(H.edCmd, []); 
+        try
+            set_param(S.mdl, 'SimulationCommand', 'start');
+        catch ME
+            errordlg(ME.message);
+            setStatus('Error al iniciar.', C.btn_stop);
+            return;
+        end
+        if isempty(S.t0), S.t0 = tic; end
+        if ~strcmp(H.tmr.Running, 'on'), start(H.tmr); end
+        setStatus('Simulación en curso...', C.btn_run);
+    end
+
+    function onStop(~, ~)
+        if strcmp(get_param(S.mdl, 'SimulationStatus'), 'running')
+            set_param(S.mdl, 'SimulationCommand', 'stop');
+        end
+        if strcmp(H.tmr.Running, 'on'), stop(H.tmr); end
+        setStatus('Simulación detenida.', C.text);
+    end
+
+    function onClear(~, ~)
+        onStop();
+        S.t0=[]; S.t=[]; S.y=[]; S.r=[];
+        set(H.hMeas,'XData',NaN,'YData',NaN);
+        set(H.hRef,'XData',NaN,'YData',NaN);
+        xlim(H.ax,'auto'); ylim(H.ax,'auto');
+        title(H.ax,'Respuesta del Sistema');
+        setStatus('Gráfica y datos limpiados.',C.text);
+    end
+
+    function pushBezierParams(src, ~)
+        % --- Sincronizar Slider y Edit Box ---
+        if src == H.sliCmd % Si el usuario movió el slider
+            val = get(H.sliCmd, 'Value');
+            set(H.edCmd, 'String', num2str(val, '%.2f')); % Actualiza el texto
+        elseif src == H.edCmd % Si el usuario escribió en el texto
+            val = str2double(get(H.edCmd, 'String'));
+            % Validar entrada
+            if isnan(val)
+                val = H.sliCmd.Value; % Si no es un número, vuelve al valor anterior
+            elseif val < S.slider.min
+                val = S.slider.min; % Forzar al mínimo
+            elseif val > S.slider.max
+                val = S.slider.max; % Forzar al máximo
+            end
+            set(H.edCmd, 'String', num2str(val, '%.2f')); % Corregir el texto
+            set(H.sliCmd, 'Value', val); % Mover el slider
+        end
+        
+        % --- Enviar TODOS los parámetros de referencia a Simulink ---
+        new_w_cmd = str2double(H.edCmd.String);
+        new_Td = str2double(H.edTd.String);
+        new_enable_shape = double(H.cbShape.Value);
+        
+        assignin('base','w_cmd', new_w_cmd);
+        assignin('base','Td', new_Td);
+        assignin('base','enable_shape', new_enable_shape);
+        
+        try
+            if strcmp(get_param(S.mdl,'SimulationStatus'),'running')
+                set_param(S.path.w_cmd,'Value',num2str(new_w_cmd));
+                set_param(S.path.td,'Value',num2str(new_Td));
+                set_param(S.path.enable_shape,'Value',num2str(new_enable_shape));
+                setStatus('Parámetros de referencia actualizados en tiempo real.',C.plot_ref);
+            else
+                setStatus('Parámetros de referencia actualizados.',C.text);
+            end
+        catch ME
+            warning('Error al actualizar parámetros de referencia: %s', ME.message);
+            setStatus('Error actualizando parámetros de referencia.',C.btn_stop);
+        end
+    end
+
+    function setMode(isPID)
+        assignin('base','use_pid',double(isPID));
+        H.btnPID.Value=isPID;
+        H.btnFZ.Value=~isPID;
+        if isPID
+            H.btnPID.BackgroundColor=C.btn_run;
+            H.btnFZ.BackgroundColor=C.btn_util;
+            new_status='Modo: PID Clásico.';
+        else
+            H.btnPID.BackgroundColor=C.btn_util;
+            H.btnFZ.BackgroundColor=C.btn_run;
+            new_status='Modo: PID Difuso.';
+        end
+        try
+            if strcmp(get_param(S.mdl,'SimulationStatus'),'running')
+                set_param(S.path.use_pid,'Value',num2str(isPID));
+                setStatus([new_status ' (Actualizado en tiempo real)'],C.plot_ref);
+            else
+                setStatus(new_status, C.text);
+            end
+        catch ME
+            warning('Error al cambiar modo de control: %s', ME.message);
+            setStatus('Error cambiando modo.',C.btn_stop);
+        end
+    end
+
+    function onTick(~, ~)
+        if ~strcmp(get_param(S.mdl,'SimulationStatus'),'running'), onStop(); return; end
+        [ok_m,w_m]=tryEval('w_meas_live'); [ok_r,w_r]=tryEval('w_ref_live');
+        if ~(ok_m && ok_r), return; end
+        t=toc(S.t0); S.t(end+1)=t; S.y(end+1)=double(w_m); S.r(end+1)=double(w_r);
+        set(H.hMeas,'XData',S.t,'YData',S.y); set(H.hRef,'XData',S.t,'YData',S.r);
+        updateAxes(t);
+        title(H.ax,sprintf('Respuesta | t: %.2fs | Error: %.3f',t,w_r-w_m),'Color',C.text);
+    end
+
+    function updateAxes(t)
+        if numel(S.t) < 2, return; end
+        miny = min([S.y, S.r]); maxy = max([S.y, S.r]);
+        pad = max(0.1, 0.1 * (maxy - miny));
+        if isinf(pad) || isnan(pad) || pad == 0, pad = 1; end
+        ylim(H.ax, [miny - pad, maxy + pad]);
+        w = 20; if t > w, xlim(H.ax, [t - w, t]); else, xlim(H.ax, [0, w]); end
+    end
+
+    function onResize(~, ~)
+        fig_pos = get(H.f, 'Position');
+        set(H.txtStatus, 'Position', [10 5 fig_pos(3)-20 25]);
+        drawnow;
+    end
+
+    function onClose(~, ~)
+        onStop();
+        if isfield(H,'tmr') && isvalid(H.tmr'), delete(H.tmr); end
+        delete(H.f);
+    end
+
+    function setStatus(msg, color), set(H.txtStatus,'String',msg,'ForegroundColor',color); end
+end
+
+% --- FUNCIONES AUXILIARES EXTERNAS ---
+function ensure(varName, defaultVal)
+    if ~evalin('base',sprintf('exist(''%s'',''var'');',varName))
+        assignin('base',varName,defaultVal);
+    end
+end
+
+function [ok, val] = tryEval(varName)
+    try
+        val=evalin('base',varName);
+        ok=isscalar(val)&&isnumeric(val)&&isfinite(val);
+    catch
+        val=NaN;
+        ok=false;
+    end
+end
+
+function H_btn = addButton(parent, pos, label, bgColor, fgColor, callback)
+    H_btn = uicontrol(parent,'Style','pushbutton','String',label,'Units','normalized','Position',pos,'FontSize',12,'FontWeight','bold','BackgroundColor',bgColor,'ForegroundColor',fgColor,'Callback',callback);
+end
+
+% --- Función auxiliar para crear un Edit Box con su etiqueta ---
+function H_edit = addEdit(parent, pos, label, colors, callback, val)
+    % Posición de la etiqueta (arriba del campo de texto)
+    l_pos = [pos(1), pos(2) + pos(4) - 0.01, pos(3), 0.08]; 
+    uicontrol(parent,'Style','text','String',label,'Units','normalized','Position',l_pos,'BackgroundColor',colors.panel,'ForegroundColor',colors.text,'HorizontalAlignment','left','FontSize',10);
+    % Posición del campo de texto (la 'pos' original)
+    H_edit = uicontrol(parent,'Style','edit','String',val,'FontSize',11,'Units','normalized','Position',pos,'BackgroundColor',colors.edit_bg,'ForegroundColor',colors.text,'Callback',callback);
+end
