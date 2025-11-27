@@ -1,5 +1,3 @@
----
-
 # Proyecto de Control de Motor con MATLAB y Simulink
 
 Version de MATLAB: 2025a
@@ -66,5 +64,3 @@ Permite obtener un modelo alternativo para comparar precision y robustez.
 
 Este repositorio contiene unicamente el entorno de Simulink.
 El firmware utilizado en la ESP32 para generar el SPWM y la comunicacion UART se encuentra en otro repositorio.
-
----
