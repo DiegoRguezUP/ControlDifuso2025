@@ -6,12 +6,12 @@ Version de MATLAB: 2025a
 
 ## Integrantes del equipo
 
-* Jaime Emmanuel Valenzuela Valdivia 0236827
-* Diego Salvador Rodriguez Hernandez 0254925
-* Hector Rogelio Robles Alcala 0244498
-* Carmen Nochipa Orozco Olivares 0249041
-* Sergio Zhivago Ramos Rivera 0246042
-* Juan Pablo Larios Franco 0244215
+- Jaime Emmanuel Valenzuela Valdivia 0236827
+- Diego Salvador Rodriguez Hernandez 0254925
+- Hector Rogelio Robles Alcala 0244498
+- Carmen Nochipa Orozco Olivares 0249041
+- Sergio Zhivago Ramos Rivera 0246042
+- Juan Pablo Larios Franco 0244215
 
 ## Descripcion general del proyecto
 
